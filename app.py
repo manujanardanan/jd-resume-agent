@@ -2,25 +2,37 @@ import streamlit as st
 import openai
 import pandas as pd
 from resume_utils import extract_text_from_pdf, extract_text_from_docx
+from io import StringIO
+import docx
+import pdfplumber
 
-# Configure Streamlit page
-st.set_page_config(page_title="JD vs Resume Checker", layout="wide")
-st.title("📄 JD vs Resume Relevance Checker (Batch Upload)")
+st.set_page_config(page_title="JD vs Resume Checker (with Interview Questions)", layout="wide")
+st.title("📄 JD vs Resume Relevance Checker (Batch Upload + Smart Questions)")
 
-# Initialize OpenAI client
 client = openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-# Input: Job Description
-jd = st.text_area("Paste Job Description", height=300)
+# JD upload or paste
+st.subheader("Job Description")
+jd_text = ""
+jd_file = st.file_uploader("Upload JD (TXT, PDF, or DOCX)", type=["txt", "pdf", "docx"])
+if jd_file:
+    if jd_file.name.endswith(".pdf"):
+        with pdfplumber.open(jd_file) as pdf:
+            jd_text = "\n".join([page.extract_text() for page in pdf.pages])
+    elif jd_file.name.endswith(".docx"):
+        doc = docx.Document(jd_file)
+        jd_text = "\n".join([para.text for para in doc.paragraphs])
+    else:
+        jd_text = StringIO(jd_file.getvalue().decode("utf-8")).read()
+else:
+    jd_text = st.text_area("Or paste the Job Description below", height=300)
 
-# Input: Multiple Resume Files
 resume_files = st.file_uploader(
     "Upload up to 20 Resumes (PDF or DOCX)",
     type=["pdf", "docx"],
     accept_multiple_files=True
 )
 
-# Function to extract experience/project sections
 def extract_relevant_experience(text):
     lines = text.splitlines()
     keep = []
@@ -32,15 +44,13 @@ def extract_relevant_experience(text):
             keep.append(line)
     return "\n".join(keep[-1000:])
 
-# Function to evaluate relevance using OpenAI
-def get_relevance_score(jd, resume_exp):
+def get_candidate_score(jd, resume_exp):
     prompt = f"""
-You are a smart resume screening assistant.
+You are a resume screening assistant.
 
-Compare the following job description and resume experience/projects only (ignore summary or objective).
-
-1. Rate the resume's relevance to the job out of 10, with a brief explanation.
-2. Return only: relevance score (as a number) and reasoning.
+1. Rate how well this resume matches the job description (score 1–10).
+2. Give a brief reason.
+3. Suggest 3–5 specific interview questions to ask this candidate based on their resume and the JD.
 
 Job Description:
 {jd}
@@ -48,37 +58,45 @@ Job Description:
 Resume Experience/Projects:
 {resume_exp}
 
-Output format:
+Format output like:
 Score: X
-Reason: <short reason>
-"""
+Reason: ...
+Interview Questions:
+1. ...
+2. ...
+    """
 
     response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.5
+        temperature=0.4
     )
 
     content = response.choices[0].message.content
+    usage = response.usage.total_tokens if hasattr(response, "usage") else 0
 
+    # Parse output
     try:
-        score_line = next(line for line in content.splitlines() if "Score:" in line)
-        reason_line = next(line for line in content.splitlines() if "Reason:" in line)
+        lines = content.splitlines()
+        score_line = next(l for l in lines if "Score:" in l)
+        reason_line = next(l for l in lines if "Reason:" in l)
+        question_lines = [l for l in lines if l.strip().startswith("1.") or l.strip().startswith("2.") or l.strip().startswith("3.")]
+
         score = float(score_line.split(":")[1].strip())
         reason = reason_line.split(":", 1)[1].strip()
+        questions = "\n".join(question_lines)
     except:
-        score = 0
-        reason = "Could not parse response"
+        score, reason, questions = 0, "Could not parse", "No questions"
 
-    return score, reason
+    return score, reason, questions, usage
 
-# Main logic on button click
 if st.button("Check All Resumes"):
-    if jd and resume_files:
+    if jd_text and resume_files:
         if len(resume_files) > 20:
             st.warning("Please upload a maximum of 20 resumes.")
         else:
             results = []
+            total_tokens = 0
             with st.spinner("Analyzing resumes..."):
                 for file in resume_files:
                     if file.name.endswith(".pdf"):
@@ -87,22 +105,25 @@ if st.button("Check All Resumes"):
                         raw_text = extract_text_from_docx(file)
 
                     resume_exp = extract_relevant_experience(raw_text)
-                    score, reason = get_relevance_score(jd, resume_exp)
+                    score, reason, questions, tokens_used = get_candidate_score(jd_text, resume_exp)
 
                     results.append({
                         "Filename": file.name,
                         "Score": score,
-                        "Reason": reason
+                        "Reason": reason,
+                        "Suggested Interview Questions": questions
                     })
+                    total_tokens += tokens_used
 
-            # Show results
             df = pd.DataFrame(results)
             df_sorted = df.sort_values(by="Score", ascending=False)
             st.success("Analysis complete. Sorted results below:")
             st.dataframe(df_sorted, use_container_width=True)
 
-            # Optional: download button
             csv = df_sorted.to_csv(index=False).encode('utf-8')
-            st.download_button("Download Results as CSV", data=csv, file_name="resume_scores.csv", mime="text/csv")
+            st.download_button("Download Results as CSV", data=csv, file_name="resume_scores_with_questions.csv", mime="text/csv")
+
+            cost_usd = total_tokens / 1000 * 0.0015  # Assuming GPT-3.5-turbo input price
+            st.caption(f"🧮 Estimated usage: {total_tokens} tokens | Estimated cost: ${cost_usd:.4f}")
     else:
         st.warning("Please provide both a Job Description and at least one resume.")
