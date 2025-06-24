@@ -11,10 +11,14 @@ st.title("📄 JD vs Resume Relevance Checker (Batch Upload + Smart Questions)")
 
 client = openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
+# Initialize session state
+if "resumes_cleared" not in st.session_state:
+    st.session_state.resumes_cleared = False
+
 # Upload or paste JD
 st.subheader("Job Description")
 jd_text = ""
-jd_file = st.file_uploader("Upload JD (TXT, PDF, or DOCX)", type=["txt", "pdf", "docx"])
+jd_file = st.file_uploader("Upload JD (TXT, PDF, or DOCX)", type=["txt", "pdf", "docx"], key="jd_file")
 if jd_file:
     if jd_file.name.endswith(".pdf"):
         with pdfplumber.open(jd_file) as pdf:
@@ -27,11 +31,25 @@ if jd_file:
 else:
     jd_text = st.text_area("Or paste the Job Description below", height=300)
 
-resume_files = st.file_uploader(
-    "Upload up to 20 Resumes (PDF or DOCX)",
-    type=["pdf", "docx"],
-    accept_multiple_files=True
-)
+# Resume uploader
+st.subheader("Resume Upload")
+
+# Clear resumes button
+col1, col2 = st.columns([1, 3])
+with col1:
+    if st.button("🗑️ Clear Resumes"):
+        st.session_state.resumes_cleared = True
+        st.experimental_rerun()
+
+if st.session_state.resumes_cleared:
+    resume_files = []
+else:
+    resume_files = st.file_uploader(
+        "Upload up to 20 Resumes (PDF or DOCX)",
+        type=["pdf", "docx"],
+        accept_multiple_files=True,
+        key="resume_files"
+    )
 
 def extract_relevant_experience(text):
     lines = text.splitlines()
@@ -90,6 +108,7 @@ Interview Questions:
     return score, reason, questions, usage
 
 if st.button("Check All Resumes"):
+    st.session_state.resumes_cleared = False  # reset resume cleared state
     if jd_text and resume_files:
         if len(resume_files) > 20:
             st.warning("Please upload a maximum of 20 resumes.")
