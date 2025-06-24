@@ -82,7 +82,7 @@ clear_button = st.button("🗑️ Clear All Resumes")
 if clear_button:
     st.session_state.resume_data = []
     st.session_state.total_score_tokens = 0
-    st.experimental_rerun()
+    st.rerun()
 
 if score_button and jd_text and resume_files:
     results, total_tokens = [], 0
