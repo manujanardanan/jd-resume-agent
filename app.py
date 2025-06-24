@@ -7,8 +7,8 @@ from io import StringIO
 import docx
 import pdfplumber
 
-st.set_page_config(page_title="JD vs Resume Agent", layout="wide")
-st.title("📄 JD vs Resume Relevance Agent")
+st.set_page_config(page_title="Resume Scorer", layout="wide")
+st.title("📊 JD vs Resume Scoring Agent")
 
 client = openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
@@ -53,50 +53,6 @@ Resume:
         score, reason = 0, "Could not parse"
     return score, reason, usage
 
-def get_question_blocks(jd, resume_exp, temperature=0.5):
-    prompt = f"""
-Generate two sets of interview questions based on the job description and resume experience.
-
-Set 1: Truth Check Questions  
-- 3–5 questions that help verify if the candidate truly did what they claimed  
-- Include short cues: "What to listen for"
-
-Set 2: Fit Check Questions  
-- 3–5 questions to assess whether the candidate can perform well in the role  
-- Include short cues: "What to listen for"
-
-Format:
-Truth Check Questions:
-1. <question>
-   What to listen for: <cue>
-
-...
-
-Fit Check Questions:
-1. <question>
-   What to listen for: <cue>
-
-Job Description:
-{jd}
-
-Resume:
-{resume_exp}
-    """
-    response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=temperature
-    )
-    content = response.choices[0].message.content
-    usage = response.usage.total_tokens if hasattr(response, "usage") else 0
-    try:
-        truth_section = content.split("Fit Check Questions:")[0].strip()
-        fit_section = content.split("Fit Check Questions:")[1].strip()
-    except:
-        truth_section = "Could not parse questions"
-        fit_section = "Could not parse questions"
-    return truth_section, fit_section, usage
-
 # JD Upload
 st.subheader("Step 1: Upload JD")
 jd_file = st.file_uploader("Upload JD (TXT, PDF, or DOCX)", type=["txt", "pdf", "docx"])
@@ -118,6 +74,14 @@ st.divider()
 st.subheader("Step 2: Upload Resumes and Score")
 resume_files = st.file_uploader("Upload resumes (PDF/DOCX)", type=["pdf", "docx"], accept_multiple_files=True)
 score_button = st.button("Run Scoring")
+clear_button = st.button("🗑️ Clear All Resumes")
+
+if clear_button:
+    if "resume_data" in st.session_state:
+        del st.session_state["resume_data"]
+    if "total_score_tokens" in st.session_state:
+        del st.session_state["total_score_tokens"]
+    st.experimental_rerun()
 
 if score_button and jd_text and resume_files:
     results, total_tokens = [], 0
@@ -151,31 +115,3 @@ if "resume_data" in st.session_state:
     } for r in st.session_state.resume_data]).sort_values(by="Score", ascending=False)
     st.dataframe(scored_df, use_container_width=True)
     st.caption(f"Estimated tokens: {st.session_state.total_score_tokens} | Cost: ${st.session_state.total_score_tokens / 1000 * 0.0015:.4f}")
-
-    # Dropdown shortlisting
-    st.divider()
-    st.subheader("Step 3: Shortlist Resumes for Interview Questions")
-    filenames = [r["Filename"] for r in st.session_state.resume_data]
-    shortlisted_files = st.multiselect("Select resumes to generate interview questions:", filenames)
-
-    if st.button("Generate Questions"):
-        question_results, total_q_tokens = [], 0
-        for r in st.session_state.resume_data:
-            if r["Filename"] in shortlisted_files:
-                resume_exp = extract_relevant_experience(r["ResumeText"])
-                truth_qs, fit_qs, tokens_used = get_question_blocks(jd_text, resume_exp)
-                question_results.append({
-                    "Filename": r["Filename"],
-                    "Truth Check Questions": truth_qs,
-                    "Fit Check Questions": fit_qs
-                })
-                total_q_tokens += tokens_used
-
-        if question_results:
-            q_df = pd.DataFrame(question_results)
-            st.dataframe(q_df, use_container_width=True)
-            csv = q_df.to_csv(index=False).encode('utf-8')
-            st.download_button("Download Questions CSV", csv, "interview_questions.csv", "text/csv")
-            st.caption(f"Estimated tokens: {total_q_tokens} | Cost: ${total_q_tokens / 1000 * 0.0015:.4f}")
-        else:
-            st.warning("No resumes were selected.")
