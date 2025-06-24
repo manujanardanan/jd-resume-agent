@@ -142,10 +142,12 @@ Previous Assessment:
 Your task:
 1. Re-evaluate the resume section carefully.
 2. Identify if you missed any information that is in fact relevant to the JD.
-3. Only suggest a higher score if the newly considered evidence **clearly strengthens** the match.
-4. Otherwise, keep the previous score and justify why no change is needed.
+3. List these missed signals explicitly.
+4. If the new evidence strongly improves alignment, update the score and explain.
+5. If the score remains low, **justify** why, even after acknowledging the missed signals. 
+   - Mention if the evidence was vague, high-level, insufficiently scoped, or lacked detail.
 
-Return the following:
+Return this format:
 
 Missed Signals (if any):
 Updated Score (if applicable):
