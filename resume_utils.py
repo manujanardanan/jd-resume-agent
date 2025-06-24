@@ -11,11 +11,11 @@ def extract_text_from_pdf(file):
                     text += page_text + "\n"
         return text
     except Exception:
-        return None  # Return None if parsing fails
+        return None
 
 def extract_text_from_docx(file):
     try:
         doc = docx.Document(file)
         return "\n".join([para.text for para in doc.paragraphs])
     except Exception:
-        return None  # Return None if parsing fails
+        return None
