@@ -6,12 +6,12 @@ from io import StringIO
 import docx
 import pdfplumber
 
-st.set_page_config(page_title="JD vs Resume Checker (with Interview Questions)", layout="wide")
+st.set_page_config(page_title="JD vs Resume Checker", layout="wide")
 st.title("📄 JD vs Resume Relevance Checker (Batch Upload + Smart Questions)")
 
 client = openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-# JD upload or paste
+# Upload or paste JD
 st.subheader("Job Description")
 jd_text = ""
 jd_file = st.file_uploader("Upload JD (TXT, PDF, or DOCX)", type=["txt", "pdf", "docx"])
@@ -75,18 +75,17 @@ Interview Questions:
     content = response.choices[0].message.content
     usage = response.usage.total_tokens if hasattr(response, "usage") else 0
 
-    # Parse output
     try:
         lines = content.splitlines()
         score_line = next(l for l in lines if "Score:" in l)
         reason_line = next(l for l in lines if "Reason:" in l)
-        question_lines = [l for l in lines if l.strip().startswith("1.") or l.strip().startswith("2.") or l.strip().startswith("3.")]
+        question_lines = [l for l in lines if l.strip().startswith(tuple("12345"))]
 
         score = float(score_line.split(":")[1].strip())
         reason = reason_line.split(":", 1)[1].strip()
         questions = "\n".join(question_lines)
     except:
-        score, reason, questions = 0, "Could not parse", "No questions"
+        score, reason, questions = 0, "Could not parse", "N/A"
 
     return score, reason, questions, usage
 
@@ -104,8 +103,11 @@ if st.button("Check All Resumes"):
                     else:
                         raw_text = extract_text_from_docx(file)
 
-                    resume_exp = extract_relevant_experience(raw_text)
-                    score, reason, questions, tokens_used = get_candidate_score(jd_text, resume_exp)
+                    if not raw_text or raw_text.strip() == "":
+                        score, reason, questions, tokens_used = 0, "File not readable", "N/A", 0
+                    else:
+                        resume_exp = extract_relevant_experience(raw_text)
+                        score, reason, questions, tokens_used = get_candidate_score(jd_text, resume_exp)
 
                     results.append({
                         "Filename": file.name,
@@ -121,9 +123,9 @@ if st.button("Check All Resumes"):
             st.dataframe(df_sorted, use_container_width=True)
 
             csv = df_sorted.to_csv(index=False).encode('utf-8')
-            st.download_button("Download Results as CSV", data=csv, file_name="resume_scores_with_questions.csv", mime="text/csv")
+            st.download_button("Download Results as CSV", data=csv, file_name="resume_scores.csv", mime="text/csv")
 
-            cost_usd = total_tokens / 1000 * 0.0015  # Assuming GPT-3.5-turbo input price
+            cost_usd = total_tokens / 1000 * 0.0015
             st.caption(f"🧮 Estimated usage: {total_tokens} tokens | Estimated cost: ${cost_usd:.4f}")
     else:
         st.warning("Please provide both a Job Description and at least one resume.")
