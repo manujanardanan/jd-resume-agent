@@ -1,3 +1,4 @@
+
 import streamlit as st
 import openai
 import pandas as pd
@@ -6,51 +7,16 @@ from io import StringIO
 import docx
 import pdfplumber
 
-st.set_page_config(page_title="JD vs Resume Checker", layout="wide")
-st.title("📄 JD vs Resume Relevance Checker (Stable Scores + Smart Questions)")
+st.set_page_config(page_title="JD vs Resume Agent", layout="wide")
+st.title("📄 JD vs Resume Relevance Agent")
 
 client = openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-# Initialize session state
-if "resumes_cleared" not in st.session_state:
-    st.session_state.resumes_cleared = False
+st.markdown("### 🔁 Use the tabs below to (1) Score resumes and (2) Generate interview questions")
 
-# Job Description input
-st.subheader("Job Description")
-jd_text = ""
-jd_file = st.file_uploader("Upload JD (TXT, PDF, or DOCX)", type=["txt", "pdf", "docx"], key="jd_file")
-if jd_file:
-    if jd_file.name.endswith(".pdf"):
-        with pdfplumber.open(jd_file) as pdf:
-            jd_text = "\n".join([page.extract_text() for page in pdf.pages])
-    elif jd_file.name.endswith(".docx"):
-        doc = docx.Document(jd_file)
-        jd_text = "\n".join([para.text for para in doc.paragraphs])
-    else:
-        jd_text = StringIO(jd_file.getvalue().decode("utf-8")).read()
-else:
-    jd_text = st.text_area("Or paste the Job Description below", height=300)
+tab1, tab2 = st.tabs(["1️⃣ Score Resumes", "2️⃣ Generate Interview Questions"])
 
-# Resume Upload UI
-st.subheader("Resume Upload")
-
-col1, col2 = st.columns([1, 3])
-with col1:
-    if st.button("🗑️ Clear Resumes"):
-        st.session_state.resumes_cleared = True
-        st.experimental_rerun()
-
-if st.session_state.resumes_cleared:
-    resume_files = []
-else:
-    resume_files = st.file_uploader(
-        "Upload up to 20 Resumes (PDF or DOCX)",
-        type=["pdf", "docx"],
-        accept_multiple_files=True,
-        key="resume_files"
-    )
-
-# Extract relevant experience/projects
+# Extract relevant sections from resume
 def extract_relevant_experience(text):
     lines = text.splitlines()
     keep = []
@@ -62,7 +28,6 @@ def extract_relevant_experience(text):
             keep.append(line)
     return "\n".join(keep[-1000:])
 
-# Separate call for stable score
 def get_score(jd, resume_exp):
     prompt = f"""
 Compare the following resume experience against the job description and rate the relevance from 1 to 10. Return only:
@@ -92,10 +57,28 @@ Resume:
         score, reason = 0, "Could not parse"
     return score, reason, usage
 
-# Separate call for interview questions
-def get_questions(jd, resume_exp):
+def get_question_blocks(jd, resume_exp):
     prompt = f"""
-Generate 3–5 specific interview questions to ask this candidate based on their resume experience and the job description below.
+Generate two sets of interview questions based on the job description and resume experience.
+
+Set 1: Truth Check Questions  
+- 3–5 questions that help verify if the candidate truly did what they claimed  
+- Include short cues: "What to listen for"
+
+Set 2: Fit Check Questions  
+- 3–5 questions to assess whether the candidate can perform well in the role  
+- Include short cues: "What to listen for"
+
+Format:
+Truth Check Questions:
+1. <question>
+   What to listen for: <cue>
+
+...
+
+Fit Check Questions:
+1. <question>
+   What to listen for: <cue>
 
 Job Description:
 {jd}
@@ -110,49 +93,92 @@ Resume:
     )
     content = response.choices[0].message.content
     usage = response.usage.total_tokens if hasattr(response, "usage") else 0
-    return content, usage
+    try:
+        truth_section = content.split("Fit Check Questions:")[0].strip()
+        fit_section = content.split("Fit Check Questions:")[1].strip()
+    except:
+        truth_section = "Could not parse questions"
+        fit_section = "Could not parse questions"
+    return truth_section, fit_section, usage
 
-# Main logic
-if st.button("Check All Resumes"):
-    st.session_state.resumes_cleared = False
-    if jd_text and resume_files:
-        if len(resume_files) > 20:
-            st.warning("Please upload a maximum of 20 resumes.")
+with tab1:
+    st.subheader("Step 1: Upload JD and Score Resumes")
+    jd_text = ""
+    jd_file = st.file_uploader("Upload JD (TXT, PDF, or DOCX)", type=["txt", "pdf", "docx"], key="jd_file_score")
+    if jd_file:
+        if jd_file.name.endswith(".pdf"):
+            with pdfplumber.open(jd_file) as pdf:
+                jd_text = "\n".join([page.extract_text() for page in pdf.pages])
+        elif jd_file.name.endswith(".docx"):
+            doc = docx.Document(jd_file)
+            jd_text = "\n".join([para.text for para in doc.paragraphs])
         else:
-            results = []
-            total_tokens = 0
-            with st.spinner("Analyzing resumes..."):
-                for file in resume_files:
-                    if file.name.endswith(".pdf"):
-                        raw_text = extract_text_from_pdf(file)
-                    else:
-                        raw_text = extract_text_from_docx(file)
+            jd_text = StringIO(jd_file.getvalue().decode("utf-8")).read()
+    else:
+        jd_text = st.text_area("Or paste JD here", height=200)
 
-                    if not raw_text or raw_text.strip() == "":
-                        score, reason, questions, tokens_used = 0, "File not readable", "N/A", 0
-                    else:
-                        resume_exp = extract_relevant_experience(raw_text)
-                        score, reason, score_tokens = get_score(jd_text, resume_exp)
-                        questions, question_tokens = get_questions(jd_text, resume_exp)
-                        tokens_used = score_tokens + question_tokens
+    resume_files = st.file_uploader("Upload resumes (PDF/DOCX)", type=["pdf", "docx"], accept_multiple_files=True)
+    if st.button("Run Scoring"):
+        if jd_text and resume_files:
+            results, total_tokens = [], 0
+            for file in resume_files:
+                if file.name.endswith(".pdf"):
+                    raw_text = extract_text_from_pdf(file)
+                else:
+                    raw_text = extract_text_from_docx(file)
 
-                    results.append({
-                        "Filename": file.name,
-                        "Score": score,
-                        "Reason": reason,
-                        "Suggested Interview Questions": questions
-                    })
-                    total_tokens += tokens_used
+                if not raw_text or raw_text.strip() == "":
+                    score, reason, tokens_used = 0, "File not readable", 0
+                else:
+                    resume_exp = extract_relevant_experience(raw_text)
+                    score, reason, tokens_used = get_score(jd_text, resume_exp)
+
+                results.append({
+                    "Filename": file.name,
+                    "Score": score,
+                    "Reason": reason
+                })
+                total_tokens += tokens_used
+
+            df = pd.DataFrame(results).sort_values(by="Score", ascending=False)
+            st.dataframe(df, use_container_width=True)
+
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button("Download CSV", csv, "scored_resumes.csv", "text/csv")
+            st.caption(f"Estimated tokens: {total_tokens} | Cost: ${total_tokens / 1000 * 0.0015:.4f}")
+        else:
+            st.warning("Please provide both JD and at least one resume.")
+
+with tab2:
+    st.subheader("Step 2: Upload Shortlisted Resumes and Generate Questions")
+    jd_text_2 = st.text_area("Paste the same JD again (or new)", height=200, key="jd_text_qs")
+    resumes_q = st.file_uploader("Upload shortlisted resumes", type=["pdf", "docx"], accept_multiple_files=True, key="shortlisted_files")
+    if st.button("Generate Interview Questions"):
+        if jd_text_2 and resumes_q:
+            results, total_tokens = [], 0
+            for file in resumes_q:
+                if file.name.endswith(".pdf"):
+                    raw_text = extract_text_from_pdf(file)
+                else:
+                    raw_text = extract_text_from_docx(file)
+
+                if not raw_text or raw_text.strip() == "":
+                    truth_qs, fit_qs, tokens_used = "N/A", "N/A", 0
+                else:
+                    resume_exp = extract_relevant_experience(raw_text)
+                    truth_qs, fit_qs, tokens_used = get_question_blocks(jd_text_2, resume_exp)
+
+                results.append({
+                    "Filename": file.name,
+                    "Truth Check Questions": truth_qs,
+                    "Fit Check Questions": fit_qs
+                })
+                total_tokens += tokens_used
 
             df = pd.DataFrame(results)
-            df_sorted = df.sort_values(by="Score", ascending=False)
-            st.success("Analysis complete. Sorted results below:")
-            st.dataframe(df_sorted, use_container_width=True)
-
-            csv = df_sorted.to_csv(index=False).encode('utf-8')
-            st.download_button("Download Results as CSV", data=csv, file_name="resume_scores.csv", mime="text/csv")
-
-            cost_usd = total_tokens / 1000 * 0.0015
-            st.caption(f"🧮 Estimated usage: {total_tokens} tokens | Estimated cost: ${cost_usd:.4f}")
-    else:
-        st.warning("Please provide both a Job Description and at least one resume.")
+            st.dataframe(df, use_container_width=True)
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button("Download CSV", csv, "interview_questions.csv", "text/csv")
+            st.caption(f"Estimated tokens: {total_tokens} | Cost: ${total_tokens / 1000 * 0.0015:.4f}")
+        else:
+            st.warning("Please provide both JD and at least one resume.")
