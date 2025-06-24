@@ -7,7 +7,7 @@ import docx
 import pdfplumber
 
 st.set_page_config(page_title="JD vs Resume Checker", layout="wide")
-st.title("📄 JD vs Resume Relevance Checker (Batch Upload + Smart Questions)")
+st.title("📄 JD vs Resume Relevance Checker (Stable Scores + Smart Questions)")
 
 client = openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
@@ -15,7 +15,7 @@ client = openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 if "resumes_cleared" not in st.session_state:
     st.session_state.resumes_cleared = False
 
-# Upload or paste JD
+# Job Description input
 st.subheader("Job Description")
 jd_text = ""
 jd_file = st.file_uploader("Upload JD (TXT, PDF, or DOCX)", type=["txt", "pdf", "docx"], key="jd_file")
@@ -31,10 +31,9 @@ if jd_file:
 else:
     jd_text = st.text_area("Or paste the Job Description below", height=300)
 
-# Resume uploader
+# Resume Upload UI
 st.subheader("Resume Upload")
 
-# Clear resumes button
 col1, col2 = st.columns([1, 3])
 with col1:
     if st.button("🗑️ Clear Resumes"):
@@ -51,6 +50,7 @@ else:
         key="resume_files"
     )
 
+# Extract relevant experience/projects
 def extract_relevant_experience(text):
     lines = text.splitlines()
     keep = []
@@ -62,53 +62,59 @@ def extract_relevant_experience(text):
             keep.append(line)
     return "\n".join(keep[-1000:])
 
-def get_candidate_score(jd, resume_exp):
+# Separate call for stable score
+def get_score(jd, resume_exp):
     prompt = f"""
-You are a resume screening assistant.
+Compare the following resume experience against the job description and rate the relevance from 1 to 10. Return only:
 
-1. Rate how well this resume matches the job description (score 1–10).
-2. Give a brief reason.
-3. Suggest 3–5 specific interview questions to ask this candidate based on their resume and the JD.
+Score: X
+Reason: ...
 
 Job Description:
 {jd}
 
-Resume Experience/Projects:
+Resume:
 {resume_exp}
-
-Format output like:
-Score: X
-Reason: ...
-Interview Questions:
-1. ...
-2. ...
     """
-
     response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.4
+        temperature=0.3
     )
-
     content = response.choices[0].message.content
     usage = response.usage.total_tokens if hasattr(response, "usage") else 0
-
     try:
-        lines = content.splitlines()
-        score_line = next(l for l in lines if "Score:" in l)
-        reason_line = next(l for l in lines if "Reason:" in l)
-        question_lines = [l for l in lines if l.strip().startswith(tuple("12345"))]
-
+        score_line = next(line for line in content.splitlines() if "Score:" in line)
+        reason_line = next(line for line in content.splitlines() if "Reason:" in line)
         score = float(score_line.split(":")[1].strip())
         reason = reason_line.split(":", 1)[1].strip()
-        questions = "\n".join(question_lines)
     except:
-        score, reason, questions = 0, "Could not parse", "N/A"
+        score, reason = 0, "Could not parse"
+    return score, reason, usage
 
-    return score, reason, questions, usage
+# Separate call for interview questions
+def get_questions(jd, resume_exp):
+    prompt = f"""
+Generate 3–5 specific interview questions to ask this candidate based on their resume experience and the job description below.
 
+Job Description:
+{jd}
+
+Resume:
+{resume_exp}
+    """
+    response = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.5
+    )
+    content = response.choices[0].message.content
+    usage = response.usage.total_tokens if hasattr(response, "usage") else 0
+    return content, usage
+
+# Main logic
 if st.button("Check All Resumes"):
-    st.session_state.resumes_cleared = False  # reset resume cleared state
+    st.session_state.resumes_cleared = False
     if jd_text and resume_files:
         if len(resume_files) > 20:
             st.warning("Please upload a maximum of 20 resumes.")
@@ -126,7 +132,9 @@ if st.button("Check All Resumes"):
                         score, reason, questions, tokens_used = 0, "File not readable", "N/A", 0
                     else:
                         resume_exp = extract_relevant_experience(raw_text)
-                        score, reason, questions, tokens_used = get_candidate_score(jd_text, resume_exp)
+                        score, reason, score_tokens = get_score(jd_text, resume_exp)
+                        questions, question_tokens = get_questions(jd_text, resume_exp)
+                        tokens_used = score_tokens + question_tokens
 
                     results.append({
                         "Filename": file.name,
