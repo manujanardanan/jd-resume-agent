@@ -7,12 +7,11 @@ from io import StringIO
 import docx
 import pdfplumber
 
-st.set_page_config(page_title="Resume Scorer with Clarification", layout="wide")
-st.title("📊 JD vs Resume Scoring Agent with Clarification Assistant")
+st.set_page_config(page_title="Resume Scorer with Self-Audit", layout="wide")
+st.title("📊 JD vs Resume Scoring Agent + Self-Audit Assistant")
 
 client = openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-# Session init
 if "resume_data" not in st.session_state:
     st.session_state.resume_data = []
 if "total_score_tokens" not in st.session_state:
@@ -34,7 +33,6 @@ if jd_file:
 else:
     jd_text = st.text_area("Or paste JD here", height=200)
 
-# Resume experience extractor
 def extract_relevant_experience(text):
     lines = text.splitlines()
     keep = []
@@ -46,7 +44,6 @@ def extract_relevant_experience(text):
             keep.append(line)
     return "\n".join(keep[-1000:])
 
-# Scoring logic
 def get_score(jd, resume_exp, temperature=0.3):
     prompt = f"""
 Compare the following resume experience against the job description and rate the relevance from 1 to 10. Return only:
@@ -76,7 +73,6 @@ Resume:
         score, reason = 0, "Could not parse"
     return score, reason, usage, content
 
-# File upload and score
 st.divider()
 st.subheader("Step 2: Upload Resumes and Score")
 resume_files = st.file_uploader("Upload resumes (PDF/DOCX)", type=["pdf", "docx"], accept_multiple_files=True)
@@ -113,7 +109,6 @@ if score_button and jd_text and resume_files:
     st.session_state.resume_data = results
     st.session_state.total_score_tokens = total_tokens
 
-# Display scores
 if st.session_state.resume_data:
     scored_df = pd.DataFrame([{
         "Filename": r["Filename"],
@@ -124,32 +119,43 @@ if st.session_state.resume_data:
     st.caption(f"Estimated tokens: {st.session_state.total_score_tokens} | Cost: ${st.session_state.total_score_tokens / 1000 * 0.0015:.4f}")
 
     st.divider()
-    st.subheader("🔍 Clarification Assistant")
+    st.subheader("🔍 Agent Self-Audit: Recheck if Anything Was Missed")
     filenames = [r["Filename"] for r in st.session_state.resume_data]
-    selected = st.selectbox("Select a resume for clarification", filenames)
+    selected = st.selectbox("Select a resume for reassessment", filenames)
 
     selected_data = next((r for r in st.session_state.resume_data if r["Filename"] == selected), None)
     if selected_data:
-        specific_resume_block = st.text_area("Paste specific resume section (optional)", selected_data["ResumeText"][:1500])
-        revised_prompt = f"""
-You are reviewing a resume against a JD.
+        editable_block = st.text_area("Resume Section to Re-check", selected_data["ResumeText"][:1500])
+
+        audit_prompt = f"""
+You are reviewing a resume section against a job description and your prior relevance assessment.
 
 Resume Section:
-{specific_resume_block}
+{editable_block}
 
 Job Description:
 {jd_text}
 
-Agent's initial assessment:
+Previous Assessment:
 {selected_data['AssessmentText']}
 
-Please check if the agent may have missed any relevant signals.
-Suggest clarification questions for the interviewer and what to listen for.
-"""
-        if st.button("🧠 Reassess & Suggest Clarifications"):
+Your task:
+1. Re-evaluate the resume section carefully.
+2. Identify if you missed any information that is in fact relevant to the JD.
+3. Only suggest a higher score if the newly considered evidence **clearly strengthens** the match.
+4. Otherwise, keep the previous score and justify why no change is needed.
+
+Return the following:
+
+Missed Signals (if any):
+Updated Score (if applicable):
+Updated Reasoning:
+        """
+
+        if st.button("🔁 Recheck Agent Judgment"):
             response = client.chat.completions.create(
                 model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": revised_prompt}],
-                temperature=0.5
+                messages=[{"role": "user", "content": audit_prompt}],
+                temperature=0.4
             )
             st.markdown("```markdown\n" + response.choices[0].message.content + "\n```")
