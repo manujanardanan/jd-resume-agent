@@ -3,17 +3,24 @@ import openai
 import pandas as pd
 from resume_utils import extract_text_from_pdf, extract_text_from_docx
 
-st.set_page_config(page_title="JD vs Multiple Resumes", layout="wide")
+# Configure Streamlit page
+st.set_page_config(page_title="JD vs Resume Checker", layout="wide")
 st.title("📄 JD vs Resume Relevance Checker (Batch Upload)")
 
-# OpenAI client
+# Initialize OpenAI client
 client = openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-# Input fields
+# Input: Job Description
 jd = st.text_area("Paste Job Description", height=300)
-resume_files = st.file_uploader("Upload up to 20 Resumes (PDF or DOCX)", type=["pdf", "docx"], accept_multiple_files=True)
 
-# Extract only experience/projects section from resume text
+# Input: Multiple Resume Files
+resume_files = st.file_uploader(
+    "Upload up to 20 Resumes (PDF or DOCX)",
+    type=["pdf", "docx"],
+    accept_multiple_files=True
+)
+
+# Function to extract experience/project sections
 def extract_relevant_experience(text):
     lines = text.splitlines()
     keep = []
@@ -25,7 +32,7 @@ def extract_relevant_experience(text):
             keep.append(line)
     return "\n".join(keep[-1000:])
 
-# Get OpenAI response
+# Function to evaluate relevance using OpenAI
 def get_relevance_score(jd, resume_exp):
     prompt = f"""
 You are a smart resume screening assistant.
@@ -54,7 +61,6 @@ Reason: <short reason>
 
     content = response.choices[0].message.content
 
-    # Try to extract Score and Reason
     try:
         score_line = next(line for line in content.splitlines() if "Score:" in line)
         reason_line = next(line for line in content.splitlines() if "Reason:" in line)
@@ -63,10 +69,10 @@ Reason: <short reason>
     except:
         score = 0
         reason = "Could not parse response"
-    
+
     return score, reason
 
-# Run matching
+# Main logic on button click
 if st.button("Check All Resumes"):
     if jd and resume_files:
         if len(resume_files) > 20:
@@ -89,14 +95,14 @@ if st.button("Check All Resumes"):
                         "Reason": reason
                     })
 
-            # Create and show DataFrame
+            # Show results
             df = pd.DataFrame(results)
             df_sorted = df.sort_values(by="Score", ascending=False)
             st.success("Analysis complete. Sorted results below:")
             st.dataframe(df_sorted, use_container_width=True)
 
-            # Optional: allow download
+            # Optional: download button
             csv = df_sorted.to_csv(index=False).encode('utf-8')
             st.download_button("Download Results as CSV", data=csv, file_name="resume_scores.csv", mime="text/csv")
     else:
-        st.warning("Please paste a job description and upload resumes.")
+        st.warning("Please provide both a Job Description and at least one resume.")
