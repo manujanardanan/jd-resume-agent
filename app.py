@@ -1,17 +1,17 @@
 import streamlit as st
 import openai
+import pandas as pd
 from resume_utils import extract_text_from_pdf, extract_text_from_docx
 
-# Streamlit page config
-st.set_page_config(page_title="JD vs Resume Checker", layout="wide")
-st.title("📄 JD vs Resume Relevance Checker")
+st.set_page_config(page_title="JD vs Multiple Resumes", layout="wide")
+st.title("📄 JD vs Resume Relevance Checker (Batch Upload)")
 
-# Initialize OpenAI client using secure key from secrets
+# OpenAI client
 client = openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 # Input fields
 jd = st.text_area("Paste Job Description", height=300)
-resume_file = st.file_uploader("Upload Resume (PDF or DOCX)", type=["pdf", "docx"])
+resume_files = st.file_uploader("Upload up to 20 Resumes (PDF or DOCX)", type=["pdf", "docx"], accept_multiple_files=True)
 
 # Extract only experience/projects section from resume text
 def extract_relevant_experience(text):
@@ -23,18 +23,17 @@ def extract_relevant_experience(text):
             capture = True
         if capture:
             keep.append(line)
-    return "\n".join(keep[-1000:])  # just last 1000 lines in case it's long
+    return "\n".join(keep[-1000:])
 
-# Use OpenAI to evaluate resume vs JD
-def check_relevance(jd, resume_exp):
+# Get OpenAI response
+def get_relevance_score(jd, resume_exp):
     prompt = f"""
 You are a smart resume screening assistant.
 
 Compare the following job description and resume experience/projects only (ignore summary or objective).
 
 1. Rate the resume's relevance to the job out of 10, with a brief explanation.
-2. Suggest 3–5 questions to verify if the candidate's experience claims are true.
-3. Suggest 3–5 questions to assess whether the candidate is a good fit for the JD.
+2. Return only: relevance score (as a number) and reasoning.
 
 Job Description:
 {jd}
@@ -42,13 +41,9 @@ Job Description:
 Resume Experience/Projects:
 {resume_exp}
 
-Format your answer like this:
-Relevance Score: X/10
-Explanation: ...
-Truth Check Questions:
-1. ...
-Fit Check Questions:
-1. ...
+Output format:
+Score: X
+Reason: <short reason>
 """
 
     response = client.chat.completions.create(
@@ -57,23 +52,51 @@ Fit Check Questions:
         temperature=0.5
     )
 
-    return response.choices[0].message.content
+    content = response.choices[0].message.content
 
-# Run on button click
-if st.button("Check Relevance"):
-    if jd and resume_file:
-        if resume_file.name.endswith(".pdf"):
-            raw_resume = extract_text_from_pdf(resume_file)
+    # Try to extract Score and Reason
+    try:
+        score_line = next(line for line in content.splitlines() if "Score:" in line)
+        reason_line = next(line for line in content.splitlines() if "Reason:" in line)
+        score = float(score_line.split(":")[1].strip())
+        reason = reason_line.split(":", 1)[1].strip()
+    except:
+        score = 0
+        reason = "Could not parse response"
+    
+    return score, reason
+
+# Run matching
+if st.button("Check All Resumes"):
+    if jd and resume_files:
+        if len(resume_files) > 20:
+            st.warning("Please upload a maximum of 20 resumes.")
         else:
-            raw_resume = extract_text_from_docx(resume_file)
+            results = []
+            with st.spinner("Analyzing resumes..."):
+                for file in resume_files:
+                    if file.name.endswith(".pdf"):
+                        raw_text = extract_text_from_pdf(file)
+                    else:
+                        raw_text = extract_text_from_docx(file)
 
-        resume_exp = extract_relevant_experience(raw_resume)
+                    resume_exp = extract_relevant_experience(raw_text)
+                    score, reason = get_relevance_score(jd, resume_exp)
 
-        if not resume_exp.strip():
-            st.warning("Couldn't extract experience/projects section from the resume.")
-        else:
-            with st.spinner("Analyzing..."):
-                result = check_relevance(jd, resume_exp)
-                st.markdown(result)
+                    results.append({
+                        "Filename": file.name,
+                        "Score": score,
+                        "Reason": reason
+                    })
+
+            # Create and show DataFrame
+            df = pd.DataFrame(results)
+            df_sorted = df.sort_values(by="Score", ascending=False)
+            st.success("Analysis complete. Sorted results below:")
+            st.dataframe(df_sorted, use_container_width=True)
+
+            # Optional: allow download
+            csv = df_sorted.to_csv(index=False).encode('utf-8')
+            st.download_button("Download Results as CSV", data=csv, file_name="resume_scores.csv", mime="text/csv")
     else:
-        st.warning("Please provide both a Job Description and a Resume.")
+        st.warning("Please paste a job description and upload resumes.")
