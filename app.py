@@ -97,7 +97,7 @@ Resume:
         fit_section = "Could not parse questions"
     return truth_section, fit_section, usage
 
-# UI
+# JD Upload
 st.subheader("Step 1: Upload JD")
 jd_file = st.file_uploader("Upload JD (TXT, PDF, or DOCX)", type=["txt", "pdf", "docx"])
 jd_text = ""
@@ -113,15 +113,15 @@ if jd_file:
 else:
     jd_text = st.text_area("Or paste JD here", height=200)
 
+# Resume scoring
 st.divider()
 st.subheader("Step 2: Upload Resumes and Score")
-
 resume_files = st.file_uploader("Upload resumes (PDF/DOCX)", type=["pdf", "docx"], accept_multiple_files=True)
 score_button = st.button("Run Scoring")
 
 if score_button and jd_text and resume_files:
     results, total_tokens = [], 0
-    for i, file in enumerate(resume_files):
+    for file in resume_files:
         if file.name.endswith(".pdf"):
             raw_text = extract_text_from_pdf(file)
         else:
@@ -136,8 +136,7 @@ if score_button and jd_text and resume_files:
             "Filename": file.name,
             "Score": score,
             "Reason": reason,
-            "ResumeText": raw_text,
-            "Shortlist": False
+            "ResumeText": raw_text
         })
         total_tokens += tokens_used
 
@@ -145,22 +144,24 @@ if score_button and jd_text and resume_files:
     st.session_state.total_score_tokens = total_tokens
 
 if "resume_data" in st.session_state:
-    df_display = pd.DataFrame([{
+    scored_df = pd.DataFrame([{
         "Filename": r["Filename"],
         "Score": r["Score"],
-        "Reason": r["Reason"],
-        "Shortlist": st.checkbox("Shortlist", key=r["Filename"])
-    } for r in st.session_state.resume_data])
-
-    st.dataframe(df_display.drop(columns=["Shortlist"]), use_container_width=True)
+        "Reason": r["Reason"]
+    } for r in st.session_state.resume_data]).sort_values(by="Score", ascending=False)
+    st.dataframe(scored_df, use_container_width=True)
     st.caption(f"Estimated tokens: {st.session_state.total_score_tokens} | Cost: ${st.session_state.total_score_tokens / 1000 * 0.0015:.4f}")
 
+    # Dropdown shortlisting
     st.divider()
-    st.subheader("Step 3: Generate Interview Questions for Shortlisted Resumes")
+    st.subheader("Step 3: Shortlist Resumes for Interview Questions")
+    filenames = [r["Filename"] for r in st.session_state.resume_data]
+    shortlisted_files = st.multiselect("Select resumes to generate interview questions:", filenames)
+
     if st.button("Generate Questions"):
         question_results, total_q_tokens = [], 0
         for r in st.session_state.resume_data:
-            if st.session_state.get(r["Filename"], False):
+            if r["Filename"] in shortlisted_files:
                 resume_exp = extract_relevant_experience(r["ResumeText"])
                 truth_qs, fit_qs, tokens_used = get_question_blocks(jd_text, resume_exp)
                 question_results.append({
@@ -177,4 +178,4 @@ if "resume_data" in st.session_state:
             st.download_button("Download Questions CSV", csv, "interview_questions.csv", "text/csv")
             st.caption(f"Estimated tokens: {total_q_tokens} | Cost: ${total_q_tokens / 1000 * 0.0015:.4f}")
         else:
-            st.warning("No resumes were shortlisted.")
+            st.warning("No resumes were selected.")
