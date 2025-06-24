@@ -2,17 +2,19 @@ import streamlit as st
 import openai
 from resume_utils import extract_text_from_pdf, extract_text_from_docx
 
+# Streamlit page config
 st.set_page_config(page_title="JD vs Resume Checker", layout="wide")
 st.title("📄 JD vs Resume Relevance Checker")
 
-# Load API key securely from Streamlit Secrets
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+# Initialize OpenAI client using secure key from secrets
+client = openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
+# Input fields
 jd = st.text_area("Paste Job Description", height=300)
 resume_file = st.file_uploader("Upload Resume (PDF or DOCX)", type=["pdf", "docx"])
 
+# Extract only experience/projects section from resume text
 def extract_relevant_experience(text):
-    # Very simple filter to grab experience/project-related parts
     lines = text.splitlines()
     keep = []
     capture = False
@@ -21,8 +23,9 @@ def extract_relevant_experience(text):
             capture = True
         if capture:
             keep.append(line)
-    return "\n".join(keep[-1000:])
+    return "\n".join(keep[-1000:])  # just last 1000 lines in case it's long
 
+# Use OpenAI to evaluate resume vs JD
 def check_relevance(jd, resume_exp):
     prompt = f"""
 You are a smart resume screening assistant.
@@ -47,13 +50,16 @@ Truth Check Questions:
 Fit Check Questions:
 1. ...
 """
-    response = openai.ChatCompletion.create(
+
+    response = client.chat.completions.create(
         model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}]
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.5
     )
 
-    return response['choices'][0]['message']['content']
+    return response.choices[0].message.content
 
+# Run on button click
 if st.button("Check Relevance"):
     if jd and resume_file:
         if resume_file.name.endswith(".pdf"):
