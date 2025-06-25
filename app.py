@@ -2,13 +2,13 @@
 import streamlit as st
 import openai
 import pandas as pd
-from resume_utils import extract_text_from_pdf, extract_text_from_docx
+from resume_utils import extract_text_from_pdf, extract_text_from_docx, extract_relevant_experience
 from io import StringIO
 import docx
 import pdfplumber
 
-st.set_page_config(page_title="Resume Scorer with Self-Audit", layout="wide")
-st.title("📊 JD vs Resume Scoring Agent + Self-Audit Assistant")
+st.set_page_config(page_title="Resume Scorer with Transparency", layout="wide")
+st.title("📊 JD vs Resume Scoring Agent with Transparency")
 
 client = openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
@@ -33,30 +33,22 @@ if jd_file:
 else:
     jd_text = st.text_area("Or paste JD here", height=200)
 
-def extract_relevant_experience(text):
-    lines = text.splitlines()
-    keep = []
-    capture = False
-    for line in lines:
-        if "experience" in line.lower() or "projects" in line.lower():
-            capture = True
-        if capture:
-            keep.append(line)
-    return "\n".join(keep[-1000:])
-
 def get_score(jd, resume_exp, temperature=0.3):
-    prompt = f"""
-Compare the following resume experience against the job description and rate the relevance from 1 to 10. Return only:
+    prompt = (
+        "Compare the following resume experience against the job description and rate the relevance from 1 to 10. "
+        "Return only:
 
-Score: X
+"
+        "Score: X
 Reason: ...
 
-Job Description:
+"
+        f"Job Description:
 {jd}
 
 Resume:
-{resume_exp}
-    """
+{resume_exp}"
+    )
     response = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}],
@@ -94,15 +86,16 @@ if score_button and jd_text and resume_files:
 
         if not raw_text or raw_text.strip() == "":
             score, reason, tokens_used, full_response = 0, "File not readable", 0, ""
+            used_block = ""
         else:
             resume_exp = extract_relevant_experience(raw_text)
             score, reason, tokens_used, full_response = get_score(jd_text, resume_exp)
+            used_block = resume_exp
         results.append({
             "Filename": file.name,
             "Score": score,
             "Reason": reason,
-            "ResumeText": raw_text,
-            "AssessmentText": full_response
+            "UsedBlock": used_block
         })
         total_tokens += tokens_used
 
@@ -110,54 +103,10 @@ if score_button and jd_text and resume_files:
     st.session_state.total_score_tokens = total_tokens
 
 if st.session_state.resume_data:
-    scored_df = pd.DataFrame([{
-        "Filename": r["Filename"],
-        "Score": r["Score"],
-        "Reason": r["Reason"]
-    } for r in st.session_state.resume_data]).sort_values(by="Score", ascending=False)
-    st.dataframe(scored_df, use_container_width=True)
+    for entry in sorted(st.session_state.resume_data, key=lambda x: -x["Score"]):
+        with st.expander(f"{entry['Filename']} | Score: {entry['Score']}"):
+            st.markdown(f"**Reason**: {entry['Reason']}")
+            with st.expander("🔍 Show Resume Section Used for Scoring"):
+                st.code(entry["UsedBlock"], language="text")
+
     st.caption(f"Estimated tokens: {st.session_state.total_score_tokens} | Cost: ${st.session_state.total_score_tokens / 1000 * 0.0015:.4f}")
-
-    st.divider()
-    st.subheader("🔍 Agent Self-Audit: Recheck if Anything Was Missed")
-    filenames = [r["Filename"] for r in st.session_state.resume_data]
-    selected = st.selectbox("Select a resume for reassessment", filenames)
-
-    selected_data = next((r for r in st.session_state.resume_data if r["Filename"] == selected), None)
-    if selected_data:
-        editable_block = st.text_area("Resume Section to Re-check", selected_data["ResumeText"][:1500])
-
-        audit_prompt = f"""
-You are reviewing a resume section against a job description and your prior relevance assessment.
-
-Resume Section:
-{editable_block}
-
-Job Description:
-{jd_text}
-
-Previous Assessment:
-{selected_data['AssessmentText']}
-
-Your task:
-1. Re-evaluate the resume section carefully.
-2. Identify if you missed any information that is in fact relevant to the JD.
-3. List these missed signals explicitly.
-4. If the new evidence strongly improves alignment, update the score and explain.
-5. If the score remains low, **justify** why, even after acknowledging the missed signals. 
-   - Mention if the evidence was vague, high-level, insufficiently scoped, or lacked detail.
-
-Return this format:
-
-Missed Signals (if any):
-Updated Score (if applicable):
-Updated Reasoning:
-        """
-
-        if st.button("🔁 Recheck Agent Judgment"):
-            response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": audit_prompt}],
-                temperature=0.4
-            )
-            st.markdown("```markdown\n" + response.choices[0].message.content + "\n```")
