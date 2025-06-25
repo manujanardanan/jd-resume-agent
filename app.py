@@ -36,18 +36,10 @@ else:
 def get_score(jd, resume_exp, temperature=0.3):
     prompt = (
         "Compare the following resume experience against the job description and rate the relevance from 1 to 10. "
-        "Return only:
-
-"
-        "Score: X
-Reason: ...
-
-"
-        f"Job Description:
-{jd}
-
-Resume:
-{resume_exp}"
+        "Return only:\n\n"
+        "Score: X\n"
+        "Reason: ...\n\n"
+        f"Job Description:\n{jd}\n\nResume:\n{resume_exp}"
     )
     response = client.chat.completions.create(
         model="gpt-3.5-turbo",
