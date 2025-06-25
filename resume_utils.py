@@ -16,18 +16,24 @@ def extract_text_from_docx(file):
     except:
         return ""
 
-def extract_relevant_experience(text):
-    sections = ["experience", "work history", "projects", "employment", "roles", "professional experience"]
-    lines = text.splitlines()
+def extract_relevant_experience(full_text):
+    lines = full_text.splitlines()
+    lines = [line.strip() for line in lines if line.strip()]
+    sections = [
+        "experience", "work history", "projects", "employment",
+        "roles", "professional experience"
+    ]
+    exclude_sections = ["summary", "career summary", "objective", "profile"]
+
     capture = False
-    keep = []
+    block = []
     for line in lines:
-        line_lower = line.lower()
-        if any(section in line_lower for section in sections):
+        lower = line.lower()
+        if any(s in lower for s in sections):
             capture = True
-        if capture:
-            keep.append(line)
-        # stop if a new unrelated section starts
-        if capture and (line_lower.strip().endswith(":") and not any(section in line_lower for section in sections)):
-            break
-    return "\n".join(keep).strip() if keep else text.strip()
+            block = []
+        elif any(x in lower for x in exclude_sections):
+            capture = False
+        elif capture:
+            block.append(line)
+    return "\n".join(block) if block else full_text
