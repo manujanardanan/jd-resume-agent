@@ -1,6 +1,7 @@
 
 import pdfplumber
 import docx
+import re
 
 def extract_text_from_pdf(file):
     try:
@@ -20,6 +21,7 @@ def extract_relevant_experience(full_text):
     lines = full_text.splitlines()
     lines = [line.strip() for line in lines if line.strip()]
 
+    # Defined to match full-line section headers only
     start_sections = [
         "experience", "work history", "projects", "employment",
         "roles", "professional experience"
@@ -29,15 +31,17 @@ def extract_relevant_experience(full_text):
         "objective", "languages", "interests", "profile"
     ]
 
+    start_pattern = re.compile(r"^\s*(" + "|".join(start_sections) + r")\s*$", re.IGNORECASE)
+    end_pattern = re.compile(r"^\s*(" + "|".join(end_sections) + r")\s*$", re.IGNORECASE)
+
     capture = False
     block = []
     for line in lines:
-        lower = line.lower()
-        if any(s in lower for s in start_sections):
+        if start_pattern.match(line):
             capture = True
             block = []
             continue
-        if any(e in lower for e in end_sections):
+        if end_pattern.match(line):
             if capture:
                 break
         if capture:
