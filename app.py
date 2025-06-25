@@ -16,22 +16,23 @@ if "resume_data" not in st.session_state:
     st.session_state.resume_data = []
 if "total_score_tokens" not in st.session_state:
     st.session_state.total_score_tokens = 0
+if "jd_text" not in st.session_state:
+    st.session_state.jd_text = ""
 
 # JD Upload
 st.subheader("Step 1: Upload JD")
 jd_file = st.file_uploader("Upload JD (TXT, PDF, or DOCX)", type=["txt", "pdf", "docx"])
-jd_text = ""
 if jd_file:
     if jd_file.name.endswith(".pdf"):
         with pdfplumber.open(jd_file) as pdf:
-            jd_text = "\n".join([page.extract_text() for page in pdf.pages])
+            st.session_state.jd_text = "\n".join([page.extract_text() for page in pdf.pages])
     elif jd_file.name.endswith(".docx"):
         doc = docx.Document(jd_file)
-        jd_text = "\n".join([para.text for para in doc.paragraphs])
+        st.session_state.jd_text = "\n".join([para.text for para in doc.paragraphs])
     else:
-        jd_text = StringIO(jd_file.getvalue().decode("utf-8")).read()
+        st.session_state.jd_text = StringIO(jd_file.getvalue().decode("utf-8")).read()
 else:
-    jd_text = st.text_area("Or paste JD here", height=200)
+    st.session_state.jd_text = st.text_area("Or paste JD here", height=200)
 
 def get_score(jd, resume_exp, temperature=0.3):
     prompt = (
@@ -68,7 +69,7 @@ if clear_button:
     st.session_state.total_score_tokens = 0
     st.rerun()
 
-if score_button and jd_text and resume_files:
+if score_button and st.session_state.jd_text and resume_files:
     results, total_tokens = [], 0
     for file in resume_files:
         if file.name.endswith(".pdf"):
@@ -81,7 +82,7 @@ if score_button and jd_text and resume_files:
             used_block = ""
         else:
             resume_exp = extract_relevant_experience(raw_text)
-            score, reason, tokens_used, full_response = get_score(jd_text, resume_exp)
+            score, reason, tokens_used, full_response = get_score(st.session_state.jd_text, resume_exp)
             used_block = resume_exp
         results.append({
             "Filename": file.name,
@@ -95,10 +96,23 @@ if score_button and jd_text and resume_files:
     st.session_state.total_score_tokens = total_tokens
 
 if st.session_state.resume_data:
-    for entry in sorted(st.session_state.resume_data, key=lambda x: -x["Score"]):
-        with st.expander(f"{entry['Filename']} | Score: {entry['Score']}"):
-            st.markdown(f"**Reason**: {entry['Reason']}")
-            with st.expander("🔍 Show Resume Section Used for Scoring"):
-                st.code(entry["UsedBlock"], language="text")
+    df = pd.DataFrame(st.session_state.resume_data).sort_values(by="Score", ascending=False)
+    st.dataframe(df[["Filename", "Score", "Reason"]], use_container_width=True)
+
+    with st.expander("🔁 Re-evaluate with updated resume block"):
+        selected_file = st.selectbox("Select resume", [r["Filename"] for r in st.session_state.resume_data])
+        selected = next(r for r in st.session_state.resume_data if r["Filename"] == selected_file)
+        updated_text = st.text_area("Update resume block for re-evaluation", selected["UsedBlock"], height=200)
+        if st.button("Re-score"):
+            new_score, new_reason, tokens, _ = get_score(st.session_state.jd_text, updated_text)
+            selected["Score"] = new_score
+            selected["Reason"] = new_reason
+            selected["UsedBlock"] = updated_text
+            st.success(f"Updated score: {new_score} | Reason: {new_reason}")
+
+    with st.expander("🔍 View resume sections used in scoring"):
+        explain_file = st.selectbox("Select resume to view section", [r["Filename"] for r in st.session_state.resume_data], key="explain")
+        explain_selected = next(r for r in st.session_state.resume_data if r["Filename"] == explain_file)
+        st.code(explain_selected["UsedBlock"], language="text")
 
     st.caption(f"Estimated tokens: {st.session_state.total_score_tokens} | Cost: ${st.session_state.total_score_tokens / 1000 * 0.0015:.4f}")
