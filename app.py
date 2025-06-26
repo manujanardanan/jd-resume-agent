@@ -1,118 +1,141 @@
-
 import streamlit as st
-import openai
+import openai, zipfile, io, tempfile, pathlib
 import pandas as pd
-from resume_utils import extract_text_from_pdf, extract_text_from_docx, extract_relevant_experience
+from resume_utils import (
+    extract_text_from_pdf,
+    extract_text_from_docx,
+    extract_relevant_experience,
+)
+import docx, pdfplumber
 from io import StringIO
-import docx
-import pdfplumber
 
-st.set_page_config(page_title="Resume Scorer with Transparency", layout="wide")
-st.title("📊 JD vs Resume Scoring Agent with Transparency")
+# ─────────────────────────  Streamlit UI  ─────────────────────────
+st.set_page_config(page_title="Resume Scorer (Batch)", layout="wide")
+st.title("📊 JD ⇄ Resume Scoring • Batch Mode")
 
 client = openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-if "resume_data" not in st.session_state:
-    st.session_state.resume_data = []
-if "total_score_tokens" not in st.session_state:
-    st.session_state.total_score_tokens = 0
-if "jd_text" not in st.session_state:
-    st.session_state.jd_text = ""
+# ───────────────────────  Session State  ─────────────────────────
+st.session_state.setdefault("resume_data", [])
+st.session_state.setdefault("total_tokens", 0)
+st.session_state.setdefault("jd_text", "")
 
-# JD Upload
-st.subheader("Step 1: Upload JD")
-jd_file = st.file_uploader("Upload JD (TXT, PDF, or DOCX)", type=["txt", "pdf", "docx"])
+# ─────────────────────  JD UPLOAD / PASTE  ───────────────────────
+st.subheader("Step 1 • Job Description")
+jd_file = st.file_uploader("Upload JD (TXT / PDF / DOCX)", ["txt", "pdf", "docx"])
 if jd_file:
-    if jd_file.name.endswith(".pdf"):
+    if jd_file.name.lower().endswith(".pdf"):
         with pdfplumber.open(jd_file) as pdf:
-            st.session_state.jd_text = "\n".join([page.extract_text() for page in pdf.pages])
-    elif jd_file.name.endswith(".docx"):
-        doc = docx.Document(jd_file)
-        st.session_state.jd_text = "\n".join([para.text for para in doc.paragraphs])
+            st.session_state.jd_text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+    elif jd_file.name.lower().endswith(".docx"):
+        st.session_state.jd_text = "\n".join(p.text for p in docx.Document(jd_file).paragraphs)
     else:
-        st.session_state.jd_text = StringIO(jd_file.getvalue().decode("utf-8")).read()
+        st.session_state.jd_text = StringIO(jd_file.getvalue().decode()).read()
 else:
-    st.session_state.jd_text = st.text_area("Or paste JD here", height=200)
+    st.session_state.jd_text = st.text_area("…or paste JD here", height=220)
 
-def get_score(jd, resume_exp, temperature=0.3):
+# ─────────────────────  SCORING FUNCTION  ────────────────────────
+def get_score(jd: str, resume_exp: str, temp: float = 0.3):
     prompt = (
-        "Compare the following resume experience against the job description and rate the relevance from 1 to 10. "
+        "Compare the following resume experience against the job description and rate the relevance from 1 to 10.\n"
         "Return only:\n\n"
         "Score: X\n"
-        "Reason: ...\n\n"
+        "Reason: …\n\n"
         f"Job Description:\n{jd}\n\nResume:\n{resume_exp}"
     )
-    response = client.chat.completions.create(
+    resp = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}],
-        temperature=temperature
+        temperature=temp,
     )
-    content = response.choices[0].message.content
-    usage = response.usage.total_tokens if hasattr(response, "usage") else 0
+    content = resp.choices[0].message.content
+    usage = resp.usage.total_tokens if hasattr(resp, "usage") else 0
     try:
-        score_line = next(line for line in content.splitlines() if "Score:" in line)
-        reason_line = next(line for line in content.splitlines() if "Reason:" in line)
-        score = float(score_line.split(":")[1].strip())
+        score_line = next(l for l in content.splitlines() if "Score:" in l)
+        reason_line = next(l for l in content.splitlines() if "Reason:" in l)
+        score = float(score_line.split(":", 1)[1].strip())
         reason = reason_line.split(":", 1)[1].strip()
-    except:
-        score, reason = 0, "Could not parse"
+    except Exception:
+        score, reason = 0, "Parse error"
     return score, reason, usage, content
 
+# ─────────────────────  RESUME BATCH UPLOAD  ─────────────────────
 st.divider()
-st.subheader("Step 2: Upload Resumes and Score")
-resume_files = st.file_uploader("Upload resumes (PDF/DOCX)", type=["pdf", "docx"], accept_multiple_files=True)
-score_button = st.button("Run Scoring")
-clear_button = st.button("🗑️ Clear All Resumes")
+st.subheader("Step 2 • Upload Resumes or ZIP Batches")
+uploads = st.file_uploader(
+    "Upload multiple PDFs / DOCXs or ZIP files (each ZIP may contain many resumes)",
+    type=["pdf", "docx", "zip"],
+    accept_multiple_files=True,
+)
 
-if clear_button:
-    st.session_state.resume_data = []
-    st.session_state.total_score_tokens = 0
+run = st.button("▶️ Run Scoring")
+clear = st.button("🗑️ Clear Results")
+
+if clear:
+    st.session_state.resume_data.clear()
+    st.session_state.total_tokens = 0
     st.rerun()
 
-if score_button and st.session_state.jd_text and resume_files:
-    results, total_tokens = [], 0
-    for file in resume_files:
-        if file.name.endswith(".pdf"):
-            raw_text = extract_text_from_pdf(file)
-        else:
-            raw_text = extract_text_from_docx(file)
+def stream_all_resumes(files):
+    """Yield (filename, bytes) for every resume inside uploaded files/ZIPs."""
+    for up in files:
+        suffix = pathlib.Path(up.name).suffix.lower()
+        if suffix in {".pdf", ".docx"}:
+            yield up.name, up.read()
+        elif suffix == ".zip":
+            z = zipfile.ZipFile(io.BytesIO(up.read()))
+            for info in z.infolist():
+                if pathlib.Path(info.filename).suffix.lower() in {".pdf", ".docx"}:
+                    yield info.filename, z.read(info.filename)
 
-        if not raw_text or raw_text.strip() == "":
-            score, reason, tokens_used, full_response = 0, "File not readable", 0, ""
-            used_block = ""
-        else:
+if run and st.session_state.jd_text and uploads:
+    all_items = list(stream_all_resumes(uploads))
+    total = len(all_items)
+    prog_bar = st.progress(0.0, text="Scoring resumes…")
+    results, total_tokens = [], 0
+
+    for idx, (fname, data) in enumerate(all_items, start=1):
+        ext = pathlib.Path(fname).suffix.lower()
+        raw_text = ""
+        try:
+            if ext == ".pdf":
+                raw_text = extract_text_from_pdf(io.BytesIO(data))
+            else:
+                raw_text = extract_text_from_docx(io.BytesIO(data))
+        except Exception:
+            pass
+
+        if raw_text.strip():
             resume_exp = extract_relevant_experience(raw_text)
-            score, reason, tokens_used, full_response = get_score(st.session_state.jd_text, resume_exp)
-            used_block = resume_exp
-        results.append({
-            "Filename": file.name,
-            "Score": score,
-            "Reason": reason,
-            "UsedBlock": used_block
-        })
-        total_tokens += tokens_used
+            score, reason, tokens, _ = get_score(st.session_state.jd_text, resume_exp)
+        else:
+            score, reason, tokens, resume_exp = 0, "Unreadable file", 0, ""
+
+        results.append(
+            dict(
+                Filename=fname,
+                Score=score,
+                Reason=reason,
+                UsedBlock=resume_exp,
+            )
+        )
+        total_tokens += tokens
+        prog_bar.progress(idx / total, text=f"Processed {idx}/{total}")
 
     st.session_state.resume_data = results
-    st.session_state.total_score_tokens = total_tokens
+    st.session_state.total_tokens = total_tokens
+    prog_bar.empty()
 
+# ─────────────────────  SHOW RESULTS / DOWNLOAD  ─────────────────
 if st.session_state.resume_data:
-    df = pd.DataFrame(st.session_state.resume_data).sort_values(by="Score", ascending=False)
+    df = pd.DataFrame(st.session_state.resume_data).sort_values("Score", ascending=False)
     st.dataframe(df[["Filename", "Score", "Reason"]], use_container_width=True)
 
-    with st.expander("🔁 Re-evaluate with updated resume block"):
-        selected_file = st.selectbox("Select resume", [r["Filename"] for r in st.session_state.resume_data])
-        selected = next(r for r in st.session_state.resume_data if r["Filename"] == selected_file)
-        updated_text = st.text_area("Update resume block for re-evaluation", selected["UsedBlock"], height=200)
-        if st.button("Re-score"):
-            new_score, new_reason, tokens, _ = get_score(st.session_state.jd_text, updated_text)
-            selected["Score"] = new_score
-            selected["Reason"] = new_reason
-            selected["UsedBlock"] = updated_text
-            st.success(f"Updated score: {new_score} | Reason: {new_reason}")
+    csv = df.to_csv(index=False).encode()
+    st.download_button("💾 Download CSV", csv, "resume_scores.csv", "text/csv")
 
-    with st.expander("🔍 View resume sections used in scoring"):
-        explain_file = st.selectbox("Select resume to view section", [r["Filename"] for r in st.session_state.resume_data], key="explain")
-        explain_selected = next(r for r in st.session_state.resume_data if r["Filename"] == explain_file)
-        st.code(explain_selected["UsedBlock"], language="text")
-
-    st.caption(f"Estimated tokens: {st.session_state.total_score_tokens} | Cost: ${st.session_state.total_score_tokens / 1000 * 0.0015:.4f}")
+    st.caption(
+        f"Total tokens: {st.session_state.total_tokens}  • "
+        f"Approx cost (~$0.0015 / 1K tokens): "
+        f"${st.session_state.total_tokens / 1000 * 0.0015:.4f}"
+    )
