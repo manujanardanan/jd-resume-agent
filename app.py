@@ -131,7 +131,7 @@ if st.session_state.resume_data:
     df = pd.DataFrame(st.session_state.resume_data).sort_values("Score", ascending=False)
     st.dataframe(df[["Filename", "Score", "Reason"]], use_container_width=True)
 
-    # Remove UsedBlock column before CSV download
+    # Remove UsedBlock column before exporting
     csv = df.drop(columns=["UsedBlock"], errors="ignore").to_csv(index=False).encode()
     st.download_button("💾 Download CSV", csv, "resume_scores.csv", "text/csv")
 
@@ -139,6 +139,4 @@ if st.session_state.resume_data:
         f"Total tokens: {st.session_state.total_tokens}  • "
         f"Approx cost (~$0.0015 / 1K tokens): "
         f"${st.session_state.total_tokens / 1000 * 0.0015:.4f}"
-    )
-
     )
